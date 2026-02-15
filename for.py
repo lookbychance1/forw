@@ -62,8 +62,7 @@ async def forward_message(update: Update, context: CallbackContext, url: str):
         await context.bot.copy_message(
             chat_id=update.effective_user.id,
             from_chat_id=SOURCE_GROUP_CHAT_ID,
-            message_id=int(message_id),
-            protect_content=True
+            message_id=int(message_id)
         )
         await update.message.reply_text("Message forwarded successfully.")
     except Exception as e:
@@ -125,8 +124,7 @@ async def process_message_ids(update: Update, context: CallbackContext):
                 await context.bot.copy_message(
                     chat_id=destination_chat_id,
                     from_chat_id=source_chat_id,
-                    message_id=message_id,
-                    protect_content=false
+                    message_id=message_id
                 )
             except NetworkError as e:
                 logger.warning(f'NetworkError occurred: {e}. Retrying in 1 second...')
