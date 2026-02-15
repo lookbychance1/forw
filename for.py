@@ -95,7 +95,7 @@ async def forward_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for mid in range(start_id, end_id + 1):
         try:
             # Forward message as-is
-            await context.bot.forward_message(
+            await context.bot.copy_message(
                 chat_id=dst,
                 from_chat_id=src,
                 message_id=mid
