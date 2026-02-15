@@ -2,8 +2,10 @@ import os
 import asyncio
 import logging
 import requests
+
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.error import RetryAfter, TimedOut, NetworkError
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("forwarder-bot")
@@ -16,6 +18,10 @@ TARGET_CHAT_ID = os.environ.get("TARGET_CHAT_ID", "").strip()
 
 PING_URL = "https://forw-10tm.onrender.com"
 PING_EVERY_SECONDS = 180  # 3 minutes
+
+# Rate-limit tuning
+BASE_DELAY = float(os.environ.get("BASE_DELAY", "0.8"))   # normal delay after success
+FAIL_DELAY = float(os.environ.get("FAIL_DELAY", "1.5"))   # delay after generic failure
 
 
 def _to_int_chat_id(v: str):
@@ -48,7 +54,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Use:\n"
         "/forward <start_id> <end_id>\n\n"
         "Example:\n"
-        "/forward 120 135"
+        "/forward 120 135\n\n"
+        "Tip: set BASE_DELAY / FAIL_DELAY env vars if needed."
     )
 
 
@@ -85,33 +92,57 @@ async def forward_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"Forwarding messages {start_id} to {end_id}...\n"
-        f"From: {src}\nTo: {dst}"
+        f"From: {src}\nTo: {dst}\n"
+        f"Delays: BASE_DELAY={BASE_DELAY}s, FAIL_DELAY={FAIL_DELAY}s"
     )
 
     ok = 0
     fail = 0
 
-    # Telegram may rate-limit; we add a small delay per message.
     for mid in range(start_id, end_id + 1):
         try:
-            # Forward message as-is
             await context.bot.copy_message(
                 chat_id=dst,
                 from_chat_id=src,
                 message_id=mid
             )
             ok += 1
-            await asyncio.sleep(0.35)
+            await asyncio.sleep(BASE_DELAY)
+
+        except RetryAfter as e:
+            # Telegram tells you exactly how long to wait.
+            wait_time = int(getattr(e, "retry_after", 1)) + 1
+            log.warning("Flood control hit at mid=%s. Sleeping for %s seconds", mid, wait_time)
+            await asyncio.sleep(wait_time)
+
+            # Retry once after waiting
+            try:
+                await context.bot.copy_message(
+                    chat_id=dst,
+                    from_chat_id=src,
+                    message_id=mid
+                )
+                ok += 1
+                await asyncio.sleep(BASE_DELAY)
+            except Exception as e2:
+                fail += 1
+                log.warning("Retry failed mid=%s: %s", mid, e2)
+                await asyncio.sleep(FAIL_DELAY)
+
+        except (TimedOut, NetworkError) as e:
+            fail += 1
+            log.warning("Network issue mid=%s: %s", mid, e)
+            await asyncio.sleep(FAIL_DELAY)
+
         except Exception as e:
             fail += 1
             log.warning("Failed mid=%s: %s", mid, e)
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(FAIL_DELAY)
 
     await update.message.reply_text(f"Done.\nSuccess: {ok}\nFailed: {fail}")
 
 
 async def on_startup(app: Application):
-    # Start ping loop
     asyncio.create_task(ping_loop(app))
     log.info("Startup complete. Ping loop started.")
 
@@ -125,7 +156,8 @@ def main():
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("forward", forward_cmd))
 
-    app.post_init = on_startup  # runs once after initialization
+    # Runs once after initialization
+    app.post_init = on_startup
 
     log.info("Bot starting...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
