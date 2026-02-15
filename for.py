@@ -159,7 +159,7 @@ def run_flask():
 
 # Function for pinging the URL
 async def ping_url(context: CallbackContext):
-    url = 'https://automatescript1.onrender.com'
+    url = 'https://forw-10tm.onrender.com'
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
