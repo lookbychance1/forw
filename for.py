@@ -1,210 +1,209 @@
-import os
-import asyncio
-import logging
-import requests
+import express from "express";
+import axios from "axios";
+import TelegramBot from "node-telegram-bot-api";
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-from telegram.error import RetryAfter, TimedOut, NetworkError, BadRequest, Forbidden
+const log = (...args) => console.log(new Date().toISOString(), ...args);
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("forwarder-bot")
+const BOT_TOKEN = (process.env.BOT_TOKEN || "").trim();
+const SOURCE_CHAT_ID = (process.env.SOURCE_CHAT_ID || "").trim();
+const TARGET_CHAT_ID = (process.env.TARGET_CHAT_ID || "").trim();
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-SOURCE_CHAT_ID = os.environ.get("SOURCE_CHAT_ID", "").strip()
-TARGET_CHAT_ID = os.environ.get("TARGET_CHAT_ID", "").strip()
+const PING_URL = (process.env.PING_URL || "https://forw-10tm.onrender.com").trim();
+const PING_EVERY_SECONDS = parseInt(process.env.PING_EVERY_SECONDS || "180", 10);
 
-PING_URL = os.environ.get("PING_URL", "https://forw-10tm.onrender.com").strip()
-PING_EVERY_SECONDS = int(os.environ.get("PING_EVERY_SECONDS", "180"))
+const BASE_DELAY = parseFloat(process.env.BASE_DELAY || "0.9");
+const FAIL_DELAY = parseFloat(process.env.FAIL_DELAY || "1.7");
 
-BASE_DELAY = float(os.environ.get("BASE_DELAY", "0.9"))
-FAIL_DELAY = float(os.environ.get("FAIL_DELAY", "1.7"))
+const PORT = parseInt(process.env.PORT || "3000", 10);
 
+function toChatId(v) {
+  if (!v) return null;
+  // allow -100xxxx, group ids, etc
+  if (/^-?\d+$/.test(v)) return Number(v);
+  return v; // @username
+}
 
-def _to_int_chat_id(v: str):
-    if not v:
-        return None
-    try:
-        return int(v)
-    except ValueError:
-        return v  # could be @username for public chats
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
+async function pingLoop() {
+  while (true) {
+    try {
+      const r = await axios.get(PING_URL, { timeout: 15000 });
+      log("Ping", PING_URL, "->", r.status);
+    } catch (e) {
+      log("Ping failed:", e?.message || e);
+    }
+    await sleep(PING_EVERY_SECONDS * 1000);
+  }
+}
 
-async def ping_loop():
-    while True:
-        try:
-            r = requests.get(PING_URL, timeout=15)
-            log.info("Ping %s -> %s", PING_URL, r.status_code)
-        except Exception as e:
-            log.warning("Ping failed: %s", e)
-        await asyncio.sleep(PING_EVERY_SECONDS)
+if (!BOT_TOKEN) {
+  throw new Error("BOT_TOKEN env var is required.");
+}
 
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Forwarder bot ready ✅\n\n"
-        "Commands:\n"
-        "/chatid  - show this chat id\n"
-        "/test    - test access to source/target\n"
-        "/forward <start_id> <end_id>\n\n"
-        "Example:\n"
-        "/forward 120 135"
-    )
+// ----- Express (optional but useful on Render) -----
+const app = express();
 
+app.get("/", (req, res) => res.status(200).send("OK"));
+app.get("/health", (req, res) => res.status(200).json({ ok: true }));
 
-async def chatid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cid = update.effective_chat.id if update.effective_chat else None
-    await update.message.reply_text(f"chat_id = `{cid}`", parse_mode="Markdown")
+app.listen(PORT, () => log(`Express listening on :${PORT}`));
 
+// start keep-alive
+pingLoop().catch((e) => log("pingLoop crashed:", e));
 
-async def test_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    src = _to_int_chat_id(SOURCE_CHAT_ID)
-    dst = _to_int_chat_id(TARGET_CHAT_ID)
+// ----- Commands -----
+bot.onText(/^\/start(?:@\w+)?$/, async (msg) => {
+  const text =
+    "Forwarder bot ready ✅\n\n" +
+    "Commands:\n" +
+    "/chatid  - show this chat id\n" +
+    "/test    - test access to source/target\n" +
+    "/forward <start_id> <end_id>\n\n" +
+    "Example:\n" +
+    "/forward 120 135";
 
-    if src is None or dst is None:
-        await update.message.reply_text(
-            "❌ Missing SOURCE_CHAT_ID / TARGET_CHAT_ID env vars.\n"
-            "Set them in Render → Environment and redeploy."
-        )
-        return
+  await bot.sendMessage(msg.chat.id, text);
+});
 
-    msg = (
-        f"Env looks set ✅\n"
-        f"SOURCE_CHAT_ID = {src}\n"
-        f"TARGET_CHAT_ID = {dst}\n\n"
-        "Now testing access..."
-    )
-    await update.message.reply_text(msg)
+bot.onText(/^\/chatid(?:@\w+)?$/, async (msg) => {
+  const cid = msg.chat?.id;
+  await bot.sendMessage(msg.chat.id, `chat_id = \`${cid}\``, { parse_mode: "Markdown" });
+});
 
-    # Test 1: bot can send to dst
-    try:
-        await context.bot.send_message(chat_id=dst, text="✅ Test: I can send to TARGET_CHAT_ID")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Cannot send to TARGET_CHAT_ID.\nError: {e}")
-        return
+bot.onText(/^\/test(?:@\w+)?$/, async (msg) => {
+  const src = toChatId(SOURCE_CHAT_ID);
+  const dst = toChatId(TARGET_CHAT_ID);
 
-    # Test 2: bot can access src (getChat)
-    try:
-        chat = await context.bot.get_chat(chat_id=src)
-        await update.message.reply_text(f"✅ Can access SOURCE chat: {chat.title or chat.id}")
-    except Exception as e:
-        await update.message.reply_text(
-            "❌ Cannot access SOURCE_CHAT_ID.\n"
-            "Make sure:\n"
-            "1) bot is added to that group/channel\n"
-            "2) bot has permission (channel: must be admin)\n"
-            f"\nError: {e}"
-        )
-        return
+  if (src == null || dst == null) {
+    await bot.sendMessage(
+      msg.chat.id,
+      "❌ Missing SOURCE_CHAT_ID / TARGET_CHAT_ID env vars.\nSet them in Render → Environment and redeploy."
+    );
+    return;
+  }
 
-    await update.message.reply_text("✅ Test complete. You can try /forward now.")
+  await bot.sendMessage(
+    msg.chat.id,
+    `Env looks set ✅\nSOURCE_CHAT_ID = ${src}\nTARGET_CHAT_ID = ${dst}\n\nNow testing access...`
+  );
 
+  // Test 1: send to dst
+  try {
+    await bot.sendMessage(dst, "✅ Test: I can send to TARGET_CHAT_ID");
+  } catch (e) {
+    await bot.sendMessage(msg.chat.id, `❌ Cannot send to TARGET_CHAT_ID.\nError: ${e?.message || e}`);
+    return;
+  }
 
-async def forward_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
-        return
+  // Test 2: access src (getChat)
+  try {
+    const chat = await bot.getChat(src);
+    await bot.sendMessage(msg.chat.id, `✅ Can access SOURCE chat: ${chat.title || chat.id}`);
+  } catch (e) {
+    await bot.sendMessage(
+      msg.chat.id,
+      "❌ Cannot access SOURCE_CHAT_ID.\n" +
+        "Make sure:\n" +
+        "1) bot is added to that group/channel\n" +
+        "2) channel: bot must be admin\n\n" +
+        `Error: ${e?.message || e}`
+    );
+    return;
+  }
 
-    # confirm we receive the command
-    log.info("Received /forward from user=%s chat=%s args=%s",
-             update.effective_user.id if update.effective_user else None,
-             update.effective_chat.id if update.effective_chat else None,
-             context.args)
+  await bot.sendMessage(msg.chat.id, "✅ Test complete. You can try /forward now.");
+});
 
-    if len(context.args) != 2:
-        await update.message.reply_text("Usage: /forward <start_id> <end_id>")
-        return
+// /forward start end
+bot.onText(/^\/forward(?:@\w+)?(?:\s+(-?\d+)\s+(-?\d+))?$/, async (msg, match) => {
+  const chatId = msg.chat.id;
+  const src = toChatId(SOURCE_CHAT_ID);
+  const dst = toChatId(TARGET_CHAT_ID);
 
-    src = _to_int_chat_id(SOURCE_CHAT_ID)
-    dst = _to_int_chat_id(TARGET_CHAT_ID)
+  log("Received /forward from", msg.from?.id, "chat", chatId, "match", match?.slice(1));
 
-    if src is None or dst is None:
-        await update.message.reply_text("❌ SOURCE_CHAT_ID / TARGET_CHAT_ID not set.")
-        return
+  if (!match || match[1] == null || match[2] == null) {
+    await bot.sendMessage(chatId, "Usage: /forward <start_id> <end_id>");
+    return;
+  }
 
-    try:
-        start_id = int(context.args[0])
-        end_id = int(context.args[1])
-    except ValueError:
-        await update.message.reply_text("❌ start_id and end_id must be integers.")
-        return
+  if (src == null || dst == null) {
+    await bot.sendMessage(chatId, "❌ SOURCE_CHAT_ID / TARGET_CHAT_ID not set.");
+    return;
+  }
 
-    if end_id < start_id:
-        start_id, end_id = end_id, start_id
+  let startId = Number(match[1]);
+  let endId = Number(match[2]);
+  if (!Number.isInteger(startId) || !Number.isInteger(endId)) {
+    await bot.sendMessage(chatId, "❌ start_id and end_id must be integers.");
+    return;
+  }
 
-    await update.message.reply_text(
-        f"Starting copy_message…\n"
-        f"From: {src}\nTo: {dst}\n"
-        f"Range: {start_id} → {end_id}\n"
-        f"Delay: {BASE_DELAY}s"
-    )
+  if (endId < startId) [startId, endId] = [endId, startId];
 
-    ok, fail = 0, 0
+  await bot.sendMessage(
+    chatId,
+    `Starting copyMessage…\nFrom: ${src}\nTo: ${dst}\nRange: ${startId} → ${endId}\nDelay: ${BASE_DELAY}s`
+  );
 
-    for mid in range(start_id, end_id + 1):
-        try:
-            await context.bot.copy_message(chat_id=dst, from_chat_id=src, message_id=mid)
-            ok += 1
-            await asyncio.sleep(BASE_DELAY)
+  let ok = 0;
+  let fail = 0;
 
-        except RetryAfter as e:
-            wait_time = int(getattr(e, "retry_after", 2)) + 1
-            log.warning("Flood control mid=%s wait=%s", mid, wait_time)
-            await asyncio.sleep(wait_time)
-            # retry once
-            try:
-                await context.bot.copy_message(chat_id=dst, from_chat_id=src, message_id=mid)
-                ok += 1
-                await asyncio.sleep(BASE_DELAY)
-            except Exception as e2:
-                fail += 1
-                log.warning("Retry failed mid=%s err=%s", mid, e2)
-                await asyncio.sleep(FAIL_DELAY)
+  for (let mid = startId; mid <= endId; mid++) {
+    try {
+      // node-telegram-bot-api supports copyMessage(chatId, fromChatId, messageId, options)
+      await bot.copyMessage(dst, src, mid);
+      ok++;
+      await sleep(BASE_DELAY * 1000);
+    } catch (e) {
+      // Flood control (429)
+      const status = e?.response?.statusCode || e?.response?.status;
+      const retryAfter =
+        e?.response?.body?.parameters?.retry_after ??
+        e?.response?.data?.parameters?.retry_after ??
+        null;
 
-        except (Forbidden, BadRequest) as e:
-            fail += 1
-            # show user-readable reason for common cases
-            text = str(e)
-            if "chat not found" in text.lower():
-                text += "\n\nFix: TARGET_CHAT_ID is wrong OR bot not in that target chat."
-            if "not enough rights" in text.lower() or "administrator" in text.lower():
-                text += "\n\nFix: for channels, bot must be ADMIN. For groups, allow posting."
-            log.warning("Hard fail mid=%s: %s", mid, e)
-            await asyncio.sleep(FAIL_DELAY)
+      if (status === 429 && retryAfter != null) {
+        const waitSec = Number(retryAfter) + 1;
+        log("Flood control mid=", mid, "wait=", waitSec);
+        await sleep(waitSec * 1000);
 
-        except (TimedOut, NetworkError) as e:
-            fail += 1
-            log.warning("Network fail mid=%s: %s", mid, e)
-            await asyncio.sleep(FAIL_DELAY)
+        // retry once
+        try {
+          await bot.copyMessage(dst, src, mid);
+          ok++;
+          await sleep(BASE_DELAY * 1000);
+          continue;
+        } catch (e2) {
+          fail++;
+          log("Retry failed mid=", mid, "err=", e2?.message || e2);
+          await sleep(FAIL_DELAY * 1000);
+          continue;
+        }
+      }
 
-        except Exception as e:
-            fail += 1
-            log.warning("Other fail mid=%s: %s", mid, e)
-            await asyncio.sleep(FAIL_DELAY)
+      // Common hard fails / network issues
+      const text = (e?.response?.body?.description || e?.message || String(e)).toLowerCase();
+      let userHint = "";
 
-    await update.message.reply_text(f"Done.\nSuccess: {ok}\nFailed: {fail}")
+      if (text.includes("chat not found")) {
+        userHint = "\n\nFix: TARGET_CHAT_ID is wrong OR bot not in that target chat.";
+      } else if (text.includes("not enough rights") || text.includes("administrator")) {
+        userHint = "\n\nFix: for channels, bot must be ADMIN. For groups, allow posting.";
+      }
 
+      fail++;
+      log("Fail mid=", mid, "err=", e?.message || e);
+      await sleep(FAIL_DELAY * 1000);
+    }
+  }
 
-async def on_startup(app: Application):
-    asyncio.create_task(ping_loop())
-    log.info("Startup complete. Ping loop started.")
+  await bot.sendMessage(chatId, `Done.\nSuccess: ${ok}\nFailed: ${fail}`);
+});
 
-
-def main():
-    if not BOT_TOKEN:
-        raise SystemExit("BOT_TOKEN env var is required.")
-
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start_cmd))
-    app.add_handler(CommandHandler("chatid", chatid_cmd))
-    app.add_handler(CommandHandler("test", test_cmd))
-    app.add_handler(CommandHandler("forward", forward_cmd))
-
-    app.post_init = on_startup
-
-    log.info("Bot starting...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-
-if __name__ == "__main__":
-    main()
+log("Bot starting... (polling enabled)");
