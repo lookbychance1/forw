@@ -6,7 +6,7 @@ const log = (...args) => console.log(new Date().toISOString(), ...args);
 
 const BOT_TOKEN = (process.env.BOT_TOKEN || "").trim();
 
-const PING_URL = (process.env.PING_URL || "https://forw-21p3.onrender.com").trim();
+const PING_URL = (process.env.PING_URL || "https://forw-06r9.onrender.com").trim();
 const PING_EVERY_SECONDS = parseInt(process.env.PING_EVERY_SECONDS || "180", 10);
 
 const BASE_DELAY = parseFloat(process.env.BASE_DELAY || "0.9");
