@@ -8,7 +8,7 @@ const BOT_TOKEN = (process.env.BOT_TOKEN || "").trim();
 const SOURCE_CHAT_ID = (process.env.SOURCE_CHAT_ID || "").trim();
 const TARGET_CHAT_ID = (process.env.TARGET_CHAT_ID || "").trim();
 
-const PING_URL = (process.env.PING_URL || "https://forw-10tm.onrender.com").trim();
+const PING_URL = (process.env.PING_URL || "https://forw-21p3.onrender.com").trim();
 const PING_EVERY_SECONDS = parseInt(process.env.PING_EVERY_SECONDS || "180", 10);
 
 const BASE_DELAY = parseFloat(process.env.BASE_DELAY || "0.9");
